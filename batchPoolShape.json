@@ -1,0 +1,50 @@
+[
+{
+    "market": "METEORA_DLMM",
+    "address": "D2ze4v7YYmBPfrDzA3XrFm4rvsmtDqoVJ4twdHS7QB98",
+    "mintA": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    "mintB": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "feeBps": 1,
+    "feeRate": 0.0001,
+    "liquidity": 22223.304151093274,
+    "tvl": "22223.304151093274",
+    "source": "meteora_dlmm",
+    "collectedAt": "2026-03-15T09:14:47.916Z"
+  },
+  {
+    "market": "ORCA_WHIRLPOOL",
+    "address": "6NUiVmsNjsi4AfsMsEiaezsaV9N4N1ZrD4jEnuWNRvyb",
+    "mintA": "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4",
+    "mintB": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "feeBps": 2,
+    "feeRate": 0.0002,
+    "liquidity": 10178145.560049431,
+    "tvl": 10178145.560049431,
+    "source": "orca_api",
+    "collectedAt": "2026-03-15T09:14:44.658Z"
+  },
+  {
+    "market": "RAYDIUM_CLMM",
+    "address": "CYbD9RaToYMtWKA7QZyoLahnHdWq553Vm62Lh6qWtuxq",
+    "mintA": "So11111111111111111111111111111111111111112",
+    "mintB": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "feeBps": 2,
+    "feeRate": 0.0002,
+    "liquidity": 1282685.02,
+    "tvl": 1282685.02,
+    "source": "concentrated",
+    "collectedAt": "2026-03-15T09:14:44.014Z"
+  },
+{
+    "market": "RAYDIUM_CPMM",
+    "address": "879F697iuDJGMevRkRcnW21fcXiAeLJK1ffsw2ATebce",
+    "mintA": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
+    "mintB": "So11111111111111111111111111111111111111112",
+    "feeBps": 25,
+    "feeRate": 0.0025,
+    "liquidity": 9913683.48,
+    "tvl": 9913683.48,
+    "source": "raydium_cpmm",
+    "collectedAt": "2026-03-15T09:14:43.819Z"
+  },
+]
