@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { Connection, PublicKey } = require('@solana/web3.js');
 const ExcelJS = require('exceljs');
 const BN = require('bn.js');
@@ -46,6 +47,28 @@ function toBN(val) {
 
 function toDecimal(val, decimals = 0) {
     return new Decimal(val.toString()).div(new Decimal(10).pow(decimals));
+}
+
+const DEX_MODULE_PATHS = {
+    METEORA_DLMM: './dist/markets/meteora-dlmm',
+    DAMM_V1: './dist/markets/damm-v1',
+    DAMM_V2: './dist/markets/damm-v2',
+    RAYDIUM_CPMM: './dist/markets/raydium-cpmm',
+    RAYDIUM_CLMM: './dist/markets/raydium-clmm',
+    RAYDIUM_AMM: './dist/markets/raydium-amm',
+    ORCA_WHIRLPOOL: './dist/markets/orca-whirlpool',
+};
+
+function normalizeDexType(dexType = '') {
+    const upper = String(dexType).toUpperCase();
+    if (upper.includes('METEORA')) return 'METEORA_DLMM';
+    if (upper.includes('DAMM') && upper.includes('V1')) return 'DAMM_V1';
+    if (upper.includes('DAMM') && upper.includes('V2')) return 'DAMM_V2';
+    if (upper.includes('RAYDIUM') && upper.includes('CLMM')) return 'RAYDIUM_CLMM';
+    if (upper.includes('RAYDIUM') && upper.includes('CPMM')) return 'RAYDIUM_CPMM';
+    if (upper.includes('RAYDIUM') && upper.includes('AMM')) return 'RAYDIUM_AMM';
+    if (upper.includes('ORCA')) return 'ORCA_WHIRLPOOL';
+    return upper;
 }
 
 // -----------------------------------------------------------------------------
@@ -216,6 +239,7 @@ class ReserveQuoteEngine {
         this.reserveCache = reserveCache || new Map();
         this.rpcUrl = rpcUrl;
         this.connection = null;
+        this.dexModules = new Map();
     }
 
     async getConnection() {
@@ -225,9 +249,66 @@ class ReserveQuoteEngine {
         return this.connection;
     }
 
-    // Simple constant product formula for CPMM pools
+    loadDexModule(dexType) {
+        const normalized = normalizeDexType(dexType);
+        if (!normalized) return null;
+        if (this.dexModules.has(normalized)) return this.dexModules.get(normalized);
+
+        const modulePath = DEX_MODULE_PATHS[normalized];
+        if (!modulePath) {
+            this.dexModules.set(normalized, null);
+            return null;
+        }
+
+        const absolutePath = path.resolve(modulePath);
+        if (!fs.existsSync(absolutePath) && !fs.existsSync(`${absolutePath}.js`)) {
+            this.dexModules.set(normalized, null);
+            return null;
+        }
+
+        const mod = require(absolutePath);
+        this.dexModules.set(normalized, mod);
+        return mod;
+    }
+
+    getQuoteViaDexModule(pool, inputMint, outputMint, amountIn) {
+        const dexType = normalizeDexType(pool.market || pool.dexType);
+        const dex = this.loadDexModule(dexType);
+        if (!dex || !dex.price) return null;
+
+        const amount = toBN(amountIn);
+        const amountAsString = amount.toString();
+        const poolArg = { ...pool, dexType };
+        const quoteArgs = [poolArg, inputMint, outputMint, amountAsString, this.reserveCache];
+
+        const quoteFn =
+            dex.price.getQuote ||
+            dex.price.quote ||
+            dex.price.getSwapQuote ||
+            dex.price.computeSwapQuote;
+
+        if (typeof quoteFn !== 'function') return null;
+
+        const rawQuote = quoteFn(...quoteArgs);
+        if (!rawQuote) return null;
+
+        const amountOutRaw = rawQuote.amountOut || rawQuote.outAmount || rawQuote.outputAmount;
+        if (!amountOutRaw) return null;
+
+        return {
+            amountOut: toBN(amountOutRaw),
+            feeBps: Number(rawQuote.feeBps ?? rawQuote.fee ?? pool.feeBps ?? 25),
+            source: `dex-module:${dexType}`,
+        };
+    }
+
     getQuoteFixed(pool, inputMint, outputMint, amountIn) {
         try {
+            const dexQuote = this.getQuoteViaDexModule(pool, inputMint, outputMint, amountIn);
+            if (dexQuote && dexQuote.amountOut && !dexQuote.amountOut.isZero()) {
+                return dexQuote;
+            }
+
             const reserves = this.reserveCache.get(pool.address);
             if (!reserves) {
                 return { amountOut: new BN(0), feeBps: pool.feeBps || 25 };
@@ -282,6 +363,31 @@ class ReserveQuoteEngine {
             console.warn(`Quote error for ${pool.market} ${pool.address?.slice(0, 8)}: ${error.message}`);
             return { amountOut: new BN(0), feeBps: pool.feeBps || 25 };
         }
+    }
+
+    quoteThreeLegRoute(route, amountInLamports) {
+        const q1 = this.getQuoteFixed(route.leg1, route.leg1.inputMint, route.leg1.outputMint, amountInLamports);
+        if (!q1 || q1.amountOut.isZero()) return null;
+
+        const q2 = this.getQuoteFixed(route.leg2, route.leg2.inputMint, route.leg2.outputMint, q1.amountOut);
+        if (!q2 || q2.amountOut.isZero()) return null;
+
+        const q3 = this.getQuoteFixed(route.leg3, route.leg3.inputMint, route.leg3.outputMint, q2.amountOut);
+        if (!q3 || q3.amountOut.isZero()) return null;
+
+        const amountIn = toBN(amountInLamports);
+        const profitLamports = q3.amountOut.sub(amountIn);
+        const profitBps = amountIn.isZero() ? 0 : profitLamports.muln(10000).div(amountIn).toNumber();
+
+        return {
+            q1,
+            q2,
+            q3,
+            amountIn: amountIn.toString(),
+            amountOut: q3.amountOut.toString(),
+            profitLamports: profitLamports.toString(),
+            profitBps,
+        };
     }
 }
 
@@ -552,20 +658,24 @@ async function exportAnalysis(leg1Data, leg2Data, leg3Data, testAmountSOL) {
     await wb.xlsx.writeFile(xlsxPath);
 
     const jsonPath = path.join(exportDir, `batch_analysis_${timestamp}.json`);
-    fs.writeFileSync(jsonPath, JSON.stringify({
+    const payload = {
         timestamp: new Date().toISOString(),
         testAmountSOL,
         leg1: leg1Data,
         leg2: leg2Data,
         leg3: leg3Data,
         triangleCandidates: triangles.slice(0, 50),
-    }, null, 2));
+    };
+    fs.writeFileSync(jsonPath, JSON.stringify(payload, null, 2));
+
+    const selectedPath = path.join(exportDir, 'selected_3leg_routes.json');
+    fs.writeFileSync(selectedPath, JSON.stringify(payload, null, 2));
 
     console.log(`\n💾 Exported:`);
     console.log(`   XLSX: ${xlsxPath}`);
     console.log(`   JSON: ${jsonPath}`);
 
-    return { xlsxPath, jsonPath, triangles };
+    return { xlsxPath, jsonPath, selectedPath, triangles };
 }
 
 function generateTriangleCandidates(leg1, leg2, leg3) {
@@ -644,8 +754,9 @@ function generateTriangleCandidates(leg1, leg2, leg3) {
 // -----------------------------------------------------------------------------
 async function main() {
     const args = process.argv.slice(2);
-    const poolsFile = args[0] || `exports/3leg_analysis_${timestamp}json`;
+    const poolsFile = args[0] || 'exports/3leg_analysis_latest.json';
     const testAmountSOL = parseFloat(args[1]) || 1.0;
+    const feedTriangleRunner = args.includes('--feed-triangle-runner');
 
     console.log('═'.repeat(70));
     console.log('  CLEANED BATCH RESERVE-BASED 3-LEG ANALYSIS');
@@ -683,7 +794,21 @@ async function main() {
         const leg2Data = calculatePriceDiffs(leg2Quoted, testAmountLamports).map((d, i) => ({ ...d, rank: i + 1 }));
         const leg3Data = calculatePriceDiffs(leg3Quoted, testAmountLamports).map((d, i) => ({ ...d, rank: i + 1 }));
 
-        await exportAnalysis(leg1Data, leg2Data, leg3Data, testAmountSOL);
+        const exported = await exportAnalysis(leg1Data, leg2Data, leg3Data, testAmountSOL);
+
+        if (feedTriangleRunner) {
+            console.log('\n🚀 Feeding selected 3-leg routes to triangleRunner4.js...');
+            const runResult = spawnSync('node', [
+                'triangleRunner4.js',
+                poolsFile,
+                '--amount', String(testAmountSOL),
+                '--use-analysis', exported.selectedPath,
+            ], { stdio: 'inherit' });
+
+            if (runResult.status !== 0) {
+                console.warn('⚠️ triangleRunner4.js exited with non-zero status');
+            }
+        }
 
         console.log(`\n⏱️  Total time: ${duration}s`);
     } catch (error) {
