@@ -28,7 +28,7 @@ const {
     USDT,
     toBN,
     batchQuoteCategory
-} = require('./src/arbitrage/batchFetcher4.js');
+} = require('./batchFetcher4.js');
 
 const EXPORT_DIR = path.resolve('exports');
 const C = {
@@ -413,21 +413,22 @@ function findTriangles(pairMap) {
 async function quoteTriangle(connection, tri, amountInLamports) {
     const { poolAB, poolBC, poolCA, tokenA, tokenB, tokenC } = tri;
 
-    // Create engine for quoting
     const engine = new ReserveQuoteEngine(new Map());
+    const legRoute = {
+        leg1: { ...poolAB, inputMint: tokenA, outputMint: tokenB },
+        leg2: { ...poolBC, inputMint: tokenB, outputMint: tokenC },
+        leg3: { ...poolCA, inputMint: tokenC, outputMint: tokenA },
+    };
 
-    // Get quotes for each leg using the engine
-    const qAB = engine.getQuoteFixed(poolAB, tokenA, tokenB, amountInLamports);
-    if (!qAB || qAB.amountOut.isZero()) return null;
+    const routeQuote = engine.quoteThreeLegRoute(legRoute, amountInLamports);
+    if (!routeQuote) return null;
 
-    const qBC = engine.getQuoteFixed(poolBC, tokenB, tokenC, qAB.amountOut);
-    if (!qBC || qBC.amountOut.isZero()) return null;
+    const qAB = routeQuote.q1;
+    const qBC = routeQuote.q2;
+    const qCA = routeQuote.q3;
 
-    const qCA = engine.getQuoteFixed(poolCA, tokenC, tokenA, qBC.amountOut);
-    if (!qCA || qCA.amountOut.isZero()) return null;
-
-    const profitLamports = qCA.amountOut.sub(amountInLamports);
-    const profitBps = amountInLamports.isZero() ? 0 : profitLamports.muln(10000).div(amountInLamports).toNumber();
+    const profitLamports = new BN(routeQuote.profitLamports);
+    const profitBps = routeQuote.profitBps;
     const inputSol = Number(amountInLamports.toString()) / 1e9;
 
     return {
